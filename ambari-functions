@@ -10,14 +10,13 @@ USAGE
 : ${AMBARI_SERVER_NAME:=${NODE_PREFIX}-server}
 : ${AMBARI_SERVER_IMAGE:="hortonworks/ambari-server:latest"}
 : ${AMBARI_AGENT_IMAGE:="hortonworks/ambari-agent:latest"}
+: ${DOCKER_SERVER:="tcp://localhost:2376"}
 : ${DOCKER_OPTS:=""}
-: ${CONSUL:="${NODE_PREFIX}-consul"}
-: ${CONSUL_IMAGE:="sequenceiq/consul:v0.5.0-v6"}
+: ${CONSUL:="localhost"}
 : ${CLUSTER_SIZE:=3}
+: ${OVERLAY_NETWORK:="my-net"}
 : ${DEBUG:=1}
 : ${SLEEP_TIME:=2}
-: ${DNS_PORT:=53}
-: ${EXPOSE_DNS:=false}
 : ${DRY_RUN:=false}
 
 run-command() {
@@ -31,7 +30,7 @@ run-command() {
 }
 
 amb-clean() {
-  unset NODE_PREFIX AMBARI_SERVER_NAME AMBARI_SERVER_IMAGE AMBARI_AGENT_IMAGE DOCKER_OPTS CONSUL CONSUL_IMAGE DEBUG SLEEP_TIME AMBARI_SERVER_IP EXPOSE_DNS \
+  unset NODE_PREFIX AMBARI_SERVER_NAME AMBARI_SERVER_IMAGE AMBARI_AGENT_IMAGE OVERLAY_NETWORK DOCKER_SERVER DOCKER_OPTS DEBUG SLEEP_TIME AMBARI_SERVER_IP \
         DRY_RUN
 }
 
@@ -39,17 +38,14 @@ get-ambari-server-ip() {
   AMBARI_SERVER_IP=$(get-host-ip ${AMBARI_SERVER_NAME})
 }
 
-get-consul-ip() {
-  get-host-ip $CONSUL
-}
-
 get-host-ip() {
   HOST=$1
-  docker inspect --format="{{.NetworkSettings.IPAddress}}" ${HOST}
+#  docker -H ${DOCKER_SERVER} inspect --format="{{.NetworkSettings.IPAddress}}" ${HOST}
+docker -H ${DOCKER_SERVER} inspect --format="{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}" ${HOST}
 }
 
 amb-members() {
-  curl http://$(get-consul-ip):8500/v1/catalog/nodes | sed -e 's/,{"Node":"ambari-8080.*}//g' -e 's/,{"Node":"consul.*}//g'
+  curl http://$CONSUL:8500/v1/catalog/nodes | sed -e 's/,{"Node":"ambari-8080.*}//g' -e 's/,{"Node":"consul.*}//g'
 }
 
 amb-settings() {
@@ -60,10 +56,9 @@ amb-settings() {
   AMBARI_SERVER_IMAGE=$AMBARI_SERVER_IMAGE
   AMBARI_AGENT_IMAGE=$AMBARI_AGENT_IMAGE
   DOCKER_OPTS=$DOCKER_OPTS
+  DOCKER_SERVER=$DOCKER_SERVER
+  OVERLAY_NETWORK=$OVERLAY_NETWORK
   AMBARI_SERVER_IP=$AMBARI_SERVER_IP
-  CONSUL=$CONSUL
-  CONSUL_IMAGE=$CONSUL_IMAGE
-  EXPOSE_DNS=$EXPOSE_DNS
   DRY_RUN=$DRY_RUN
 EOF
 }
@@ -73,13 +68,11 @@ debug() {
 }
 
 docker-ps() {
-  #docker ps|sed "s/ \{3,\}/#/g"|cut -d '#' -f 1,2,7|sed "s/#/\t/g"
-  docker inspect --format="{{.Name}} {{.NetworkSettings.IPAddress}} {{.Config.Image}} {{.Config.Entrypoint}} {{.Config.Cmd}}" $(docker ps -q)
+  docker -H $DOCKER_SERVER inspect --format="{{.Name}} {{.NetworkSettings.IPAddress}} {{.Config.Image}} {{.Config.Entrypoint}} {{.Config.Cmd}}" $(docker -H $DOCKER_SERVER  ps -q)
 }
 
 docker-psa() {
-  #docker ps|sed "s/ \{3,\}/#/g"|cut -d '#' -f 1,2,7|sed "s/#/\t/g"
-  docker inspect --format="{{.Name}} {{.NetworkSettings.IPAddress}} {{.Config.Image}} {{.Config.Entrypoint}} {{.Config.Cmd}}" $(docker ps -qa)
+  docker $DOCKER_OPTS inspect --format="{{.Name}} {{.NetworkSettings.IPAddress}} {{.Config.Image}} {{.Config.Entrypoint}} {{.Config.Cmd}}" $(docker ps -qa)
 }
 
 amb-start-cluster() {
@@ -93,12 +86,23 @@ amb-start-cluster() {
   done
 }
 
+amb-stop-cluster() {
+  local act_cluster_size=$1
+  : ${act_cluster_size:=$CLUSTER_SIZE}
+  echo stopping an ambari cluster with: $act_cluster_size nodes
+
+  consul-deregister-service ${AMBARI_SERVER_NAME}
+  docker -H $DOCKER_SERVER rm -f ${AMBARI_SERVER_NAME}
+  [ $act_cluster_size -gt 1 ] && for i in $(seq $((act_cluster_size - 1))); do
+    amb-stop-node $i
+  done
+}
 _amb_run_shell() {
   COMMAND=$1
   : ${COMMAND:? required}
   get-ambari-server-ip
-  EXPECTED_HOST_COUNT=$(docker inspect --format="{{.Config.Image}} {{.Name}}" $(docker ps -q)|grep $AMBARI_AGENT_IMAGE|grep $NODE_PREFIX|wc -l|xargs)
-  run-command docker run -it --rm -e EXPECTED_HOST_COUNT=$EXPECTED_HOST_COUNT -e BLUEPRINT=$BLUEPRINT --link ${AMBARI_SERVER_NAME}:ambariserver \
+  EXPECTED_HOST_COUNT=$(docker -H ${DOCKER_SERVER} inspect --format="{{.Config.Image}} {{.Name}}" $(docker ps -q)|grep $AMBARI_AGENT_IMAGE|grep $NODE_PREFIX|wc -l|xargs)
+  run-command docker -H ${DOCKER_SERVER} run --net=${OVERLAY_NETWORK} -it --rm -e EXPECTED_HOST_COUNT=$EXPECTED_HOST_COUNT -e BLUEPRINT=$BLUEPRINT --link ${AMBARI_SERVER_NAME}:ambariserver \
      --entrypoint /bin/sh $AMBARI_SERVER_IMAGE -c $COMMAND
 }
 
@@ -123,18 +127,11 @@ amb-deploy-cluster() {
 }
 
 amb-start-first() {
-  local dns_port_command=""
-  if [[ "$EXPOSE_DNS" == "true" ]]; then
-     dns_port_command="-p 53:$DNS_PORT/udp"
-  fi
-  run-command docker run -d $dns_port_command --name $CONSUL -h $CONSUL.service.consul $CONSUL_IMAGE -server -bootstrap
-  sleep 5
-
-  run-command docker run -d $DOCKER_OPTS --privileged --name $AMBARI_SERVER_NAME -h $AMBARI_SERVER_NAME.service.consul $AMBARI_SERVER_IMAGE \
-          systemd.setenv=NAMESERVER_ADDR=$(get-consul-ip)
+  run-command docker -H ${DOCKER_SERVER} run --net=${OVERLAY_NETWORK} -p 8182:8080 -d $DOCKER_OPTS \
+--privileged --name $AMBARI_SERVER_NAME -h $AMBARI_SERVER_NAME.service.consul $AMBARI_SERVER_IMAGE \
+          systemd.setenv=NAMESERVER_ADDR=${CONSUL}
 
   get-ambari-server-ip
-
   _consul-register-service $AMBARI_SERVER_NAME $AMBARI_SERVER_IP
   _consul-register-service ambari-8080 $AMBARI_SERVER_IP
 }
@@ -174,10 +171,15 @@ amb-start-node() {
     MORE_OPTIONS="$@"
   fi
 
-  run-command docker run $MORE_OPTIONS $DOCKER_OPTS --privileged --name ${NODE_PREFIX}$NUMBER -h ${NODE_PREFIX}${NUMBER}.service.consul $AMBARI_AGENT_IMAGE \
-              systemd.setenv=NAMESERVER_ADDR=$(get-consul-ip)
+  run-command docker -H ${DOCKER_SERVER} run --net ${OVERLAY_NETWORK} $MORE_OPTIONS $DOCKER_OPTS --privileged --name ${NODE_PREFIX}$NUMBER -h ${NODE_PREFIX}${NUMBER}.service.consul $AMBARI_AGENT_IMAGE \
+              systemd.setenv=NAMESERVER_ADDR=${CONSUL}
 
   _consul-register-service ${NODE_PREFIX}${NUMBER} $(get-host-ip ${NODE_PREFIX}$NUMBER)
+}
+
+amb-stop-node() {
+  consul-deregister-service ${NODE_PREFIX}$1
+  run-command docker -H ${DOCKER_SERVER} $DOCKER_OPTS rm -f ${NODE_PREFIX}$1
 }
 
 _consul-register-service() {
@@ -187,5 +189,11 @@ _consul-register-service() {
     \"Service\": {
       \"Service\": \"$1\"
     }
-  }" http://$(get-consul-ip):8500/v1/catalog/register
+  }" http://${CONSUL}:8500/v1/catalog/register
+}
+consul-deregister-service() {
+  curl -X PUT -d "{
+    \"Datacenter\": \"dc1\",
+    \"Node\": \"$1\"
+  }" http://${CONSUL}:8500/v1/catalog/deregister
 }
