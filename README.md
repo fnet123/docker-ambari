@@ -11,18 +11,18 @@ Bare-Metal Docker Swarm Clusters are built using multiple physical hosts that ha
 * All hosts must not have a DNS installed
 ## Why do I use Consul
 * Consul is used for two reasons:
-** Consul is used as a dynamic DNS for the Ambari nodes
-** Consul is used as a "backing store" for the Docker Cluster
+  * Consul is used as a dynamic DNS for the Ambari nodes
+  * Consul is used as a "backing store" for the Docker Cluster
 ## What should be installed onto each host - Software
-* [Go Language](https://golang.org/)
-* [Go Dep](https://github.com/tools/godep)
-* [Docker](http://www.docker.com)
-* [Docker Swarm](https://github.com/docker/swarm)
-* [Consul](https://www.consul.io/intro/getting-started/install.html)
-
-## What are the steps for sucessful host install?
+  * [Go Language](https://golang.org/)
+  * [Go Dep](https://github.com/tools/godep)
+  * [Docker](http://www.docker.com)
+  * [Docker Swarm](https://github.com/docker/swarm)
+  * [Consul](https://www.consul.io/intro/getting-started/install.html)
+## Optional Software
+  * [Docker Compose](https://github.com/docker/compose)
 # Prepare the hosts
 ## Add each host to the /etc/hosts file with a short name for the machine
-## Decide which host will start the Consul 
+## Pick which host will start the Consul 
 ## Create an upstart on each machine so that when it comes up
 * There is documentation at ([Docker](http://www.docker.com) for implementing a Docker Swarm cluster
