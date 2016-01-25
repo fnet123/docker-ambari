@@ -134,10 +134,55 @@ Bare-Metal Docker Swarm Clusters are built using multiple physical hosts that ha
  
 ### Install Godep
 * Follow the instructions [here](https://github.com/tools/godep).
+
 ### Install Swarm
 * Follow the instructions [here](https://github.com/docker/swarm) to compile Docker Swarm.  If you have an earlier version of Go installed lower than 1.9 you will have compile errors in that situation you should follow the instructions, uninstall your current version and add the new version.
 * Copy the swarm executable from the `${GOCODE}/bin` directory to `/usr/bin` `sudo cp ${GOCODE}/bin/swarm /usr/bin/.`
 
  `sudo chmod 755 /usr/bin/swarm`
 
-* Create a startup script in `/etc/init`
+* Create a startup script in `/etc/init` called swarm.conf a sample is below:
+
+`description "Docker Swarm daemon"`
+
+`start on (local-filesystems and net-device-up IFACE!=lo)`
+
+`stop on runlevel [!2345]`
+
+`limit nofile 524288 1048576`
+
+`limit nproc 524288 1048576`
+
+`respawn`
+
+`kill timeout 20`
+
+`pre-start script`
+
+`end script`
+
+`script`
+
+`        # modify these in /etc/default/$UPSTART_JOB (/etc/default/docker)`
+
+`        SWARM=/usr/bin/swarm`
+
+`        SWARM_OPTS="--advertise=<hostip>:2375 consul://<consulIp>:8500"`
+
+`        if [ -f /etc/default/$UPSTART_JOB ]; then`
+
+`                . /etc/default/$UPSTART_JOB`
+
+`        fi`
+
+`        exec "$SWARM" join $SWARM_OPTS`
+
+`end script`
+
+`post-start script`
+
+`        DOCKER_OPTS=`
+
+`       echo "swarm join is up"`
+
+`end script`
