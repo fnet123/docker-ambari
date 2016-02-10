@@ -1,1 +1,1 @@
-docker -H 192.168.1.18:2376 run --net=my-net --name javaExec --rm -v /home/jdavis/git/javaExec:/javaExec -i -t java:8 bash
+docker -H 192.168.1.18:2375 run --net=my-net --name javaExec --rm  -v /home/jdavis/git/javaExec:/home/jdavis/git -i -t java:8 bash
