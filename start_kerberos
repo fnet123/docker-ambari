@@ -1,0 +1,1 @@
+docker run -d --net=my-net --name kerberos -v /dev/urandom:/dev/random -e NAMESERVER_IP=${CONSUL} sequenceiq/kerberos

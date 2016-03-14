@@ -8,8 +8,13 @@ USAGE
 
 : ${NODE_PREFIX=amb}
 : ${AMBARI_SERVER_NAME:=${NODE_PREFIX}-server}
+: ${AMBARI_SERVER_HOST_NAME:="ubuntu-jdavis-dell"}
+: ${AMBARI_SERVER_HOST_PORT:="8080"}
 : ${AMBARI_SERVER_IMAGE:="hortonworks/ambari-server:latest"}
+: ${AMBARI_SERVER_CANNED_IMAGE:="jdavis/amb-server"}
+: ${AMBARI_SERVER_CANNED_PREFIX:="amb"}
 : ${AMBARI_AGENT_IMAGE:="hortonworks/ambari-agent:latest"}
+: ${AMBARI_AGENT_RESTART_IMAGE:="hortonworks/ambari-agent:latest"}
 : ${DOCKER_HOST:="tcp://localhost:2376"}
 : ${DOCKER_OPTS:=""}
 : ${CONSUL:="localhost"}
@@ -30,8 +35,12 @@ run-command() {
 }
 
 amb-clean() {
-  unset NODE_PREFIX AMBARI_SERVER_NAME AMBARI_SERVER_IMAGE AMBARI_AGENT_IMAGE OVERLAY_NETWORK DOCKER_HOST DOCKER_OPTS DEBUG SLEEP_TIME AMBARI_SERVER_IP \
-        DRY_RUN
+  unset NODE_PREFIX AMBARI_SERVER_NAME \
+        AMBARI_SERVER_HOST_NAME AMBARI_HOST_PORT \
+        AMBARI_SERVER_IMAGE AMBARI_AGENT_IMAGE OVERLAY_NETWORK DOCKER_HOST \
+        DOCKER_OPTS DEBUG SLEEP_TIME AMBARI_SERVER_IP \
+        AMBARI_SERVER_CANNED_IMAGE AMBARI_AGENT_RESTART_IMAGE \
+        AMBARI_SERVER_HOST_PORT DRY_RUN CONSUL DOCKER_HOST
 }
 
 get-ambari-server-ip() {
@@ -40,7 +49,6 @@ get-ambari-server-ip() {
 
 get-host-ip() {
   HOST=$1
-#  docker -H ${DOCKER_HOST} inspect --format="{{.NetworkSettings.IPAddress}}" ${HOST}
 docker -H ${DOCKER_HOST} inspect --format="{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}" ${HOST}
 }
 
@@ -59,11 +67,15 @@ amb-settings() {
   AMBARI_SERVER_NAME=$AMBARI_SERVER_NAME
   AMBARI_SERVER_IMAGE=$AMBARI_SERVER_IMAGE
   AMBARI_AGENT_IMAGE=$AMBARI_AGENT_IMAGE
+  AMBARI_SERVER_HOST_NAME=$AMBARI_SERVER_HOST_NAME
+  AMBARI_SERVER_HOST_PORT=$AMBARI_SERVER_HOST_PORT
   DOCKER_OPTS=$DOCKER_OPTS
   DOCKER_HOST=$DOCKER_HOST
   OVERLAY_NETWORK=$OVERLAY_NETWORK
   AMBARI_SERVER_IP=$AMBARI_SERVER_IP
   DRY_RUN=$DRY_RUN
+  AMBARI_SERVER_CANNED_IMAGE=$AMBAR_SERVER_CANNED_IMAGE
+  CONSUL=$CONSUL
 EOF
 }
 
@@ -87,6 +99,16 @@ amb-start-cluster() {
   amb-start-first
   [ $act_cluster_size -gt 1 ] && for i in $(seq $((act_cluster_size - 1))); do
     amb-start-node $i
+  done
+}
+amb-start-canned-cluster() {
+  local act_cluster_size=$1
+  : ${act_cluster_size:=$CLUSTER_SIZE}
+  echo starting an existing ambari cluster with: $act_cluster_size nodes
+
+  amb-start-canned-first
+  [ $act_cluster_size -gt 1 ] && for i in $(seq $((act_cluster_size - 1))); do
+    amb-start-canned-node $i
   done
 }
 
@@ -142,9 +164,22 @@ amb-deploy-cluster() {
 }
 
 amb-start-first() {
-  run-command docker -H ${DOCKER_HOST} run --net=${OVERLAY_NETWORK} -e constraint:node==ubuntu-jdavis-dell -p 8182:8080 -d $DOCKER_OPTS \
---privileged --name $AMBARI_SERVER_NAME -h $AMBARI_SERVER_NAME.service.consul $AMBARI_SERVER_IMAGE \
+  run-command docker -H ${DOCKER_HOST} run --net=${OVERLAY_NETWORK} \
+  -e constraint:node==${AMBARI_SERVER_HOST_NAME} -p ${AMBARI_SERVER_HOST_PORT}:8080 -d $DOCKER_OPTS \
+  --privileged --name $AMBARI_SERVER_NAME -h $AMBARI_SERVER_NAME.service.consul $AMBARI_SERVER_IMAGE \
           systemd.setenv=NAMESERVER_ADDR=${CONSUL}
+
+  get-ambari-server-ip
+  _consul-register-service $AMBARI_SERVER_NAME $AMBARI_SERVER_IP
+  _consul-register-service ambari-8080 $AMBARI_SERVER_IP
+}
+
+amb-start-canned-first() {
+  run-command docker -H ${DOCKER_HOST} run --net=${OVERLAY_NETWORK} -e constraint:node==${AMBARI_SERVER_HOST_NAME} \
+-p ${AMBARI_SERVER_HOST_PORT}:8080 -d \
+--privileged --name $AMBARI_SERVER_NAME -h $AMBARI_SERVER_NAME.service.consul \
+ ${AMBARI_SERVER_CANNED_IMAGE} \
+systemd.setenv=NAMESERVER_ADDR=${CONSUL}
 
   get-ambari-server-ip
   _consul-register-service $AMBARI_SERVER_NAME $AMBARI_SERVER_IP
@@ -183,6 +218,29 @@ amb-scp-to-first() {
   scp $FILE_PATH root@$AMBARI_SERVER_IP:$DEST_PATH
 }
 
+amb-start-canned-node() {
+  get-ambari-server-ip
+  : ${AMBARI_SERVER_IP:?"AMBARI_SERVER_IP is needed"}
+  NUMBER=${1:?"please give a <NUMBER> parameter it will be used as node<NUMBER>"}
+  if [[ $# -eq 1 ]]; then
+    MORE_OPTIONS="-d"
+  else
+    shift
+    MORE_OPTIONS="$@"
+  fi
+  run-command docker -H ${DOCKER_HOST} run \
+   --net ${OVERLAY_NETWORK} \
+   $MORE_OPTIONS \
+   $DOCKER_OPTS \
+   --privileged \
+   --name ${NODE_PREFIX}$NUMBER \
+   -h ${NODE_PREFIX}${NUMBER}.service.consul \
+   jdavis/amb${NUMBER}-storm \
+   systemd.setenv=NAMESERVER_ADDR=${CONSUL}
+
+  _consul-register-service ${NODE_PREFIX}${NUMBER} $(get-host-ip ${NODE_PREFIX}$NUMBER)
+  #DOCKER_OPTS=""
+}
 amb-start-node() {
   get-ambari-server-ip
   : ${AMBARI_SERVER_IP:?"AMBARI_SERVER_IP is needed"}
@@ -193,10 +251,6 @@ amb-start-node() {
     shift
     MORE_OPTIONS="$@"
   fi
-  MOUNT=/home/ambaricluster
-  #DOCKER_OPTS="-e constraint:node==ubuntu-jdavis-dell"
-  # -v ${MOUNT}/${NODE_PREFIX}1/namenode:/hadoop/hdfs/namenode \
- #  -v ${MOUNT}/${NODE_PREFIX}1/secondary:/hadoop/hdfs/namesecondary \
 
   run-command docker -H ${DOCKER_HOST} run \
    --net ${OVERLAY_NETWORK} \
